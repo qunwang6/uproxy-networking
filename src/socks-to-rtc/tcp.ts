@@ -201,6 +201,7 @@ module TCP {
     private disconnectPromise_ :Promise<number>;
     // Private function called to invoke disconnectPromise_. 
     private fulfillDisconnect_ :(number)=>void;
+    private rejectDisconnect_ :(Error)=>void;
     private server_ :Server;
 
     /**
@@ -216,6 +217,7 @@ module TCP {
       this.pendingRead_ = false;
       this.disconnectPromise_ = new Promise<number>((F, R) => {
         this.fulfillDisconnect_ = F;  // To be fired on disconnect.
+        this.rejectDisconnect_ = R;
       });
       this.connectionSocket_ = freedom['core.tcpsocket'](socketId);
       this.connectionSocket_.on('onData', this.onDataHandler_);
@@ -241,6 +243,10 @@ module TCP {
       if (data.errcode) {
         dbgWarn('Socket ' + this.socketId + ' disconnected with errcode ' +
           data.errcode + ': ' + data.message);
+        this.rejectDisconnect_(
+            new Error('Disconnect with error=' + data.errcode));
+      } else {
+        this.fulfillDisconnect_(0);
       }
       this.close().then(() => {
         this.server_.removeFromServer(this);

@@ -108,7 +108,7 @@ module Socks {
     /**
      * Returns a promise to negotiate a TCP connection with the SOCKS client.
      */
-    private doTcp(conn:TCP.Connection, socksRequest:Socks.SocksRequest) {
+    private doTcp = (conn:TCP.Connection, socksRequest:Socks.SocksRequest) => {
       var params:Channel.EndpointInfo = {
         protocol: 'tcp',
         address: socksRequest.addressString,
@@ -120,6 +120,10 @@ module Socks {
         .then((endpointInfo:Channel.EndpointInfo) => {
           // Clean up when the TCP connection terminates.
           conn.onceDisconnected().then(() => {
+            dbg('client side close connection, tell rtc-to-net to close!');
+            endpointInfo.terminate();
+          }, () => {
+            dbg('client side socket error, tell rtc-to-net to close!');
             endpointInfo.terminate();
           });
           conn.on('recv', endpointInfo.send);

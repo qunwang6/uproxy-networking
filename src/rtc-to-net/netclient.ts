@@ -20,6 +20,8 @@ module Net {
     port:number;
   }
 
+  var dbgNetTcpConnectionCount = 0;
+
   /**
    * Net.Client - TCP socket connection to a net destination.
    *
@@ -84,6 +86,9 @@ module Net {
         return;
       }
       dbg('closing socket of ' + JSON.stringify(this.destination));
+
+      dbgNetTcpConnectionCount--;
+      dbg('!!! closed ' + JSON.stringify(this.destination) + ', dbgNetTcpConnectionCount=' + dbgNetTcpConnectionCount);
       this.state = State.CLOSED;
       if (this.socket_) {
         this.socket_.close();
@@ -106,6 +111,8 @@ module Net {
      */
     private connect_ = () : Promise<any> => {
       this.state = State.CONNECTING;
+      dbgNetTcpConnectionCount++;
+      dbg('!!! connect to ' + JSON.stringify(this.destination) + ', dbgNetTcpConnectionCount=' + dbgNetTcpConnectionCount);
       return this.socket_.connect(this.destination.address,
                                   this.destination.port);
     }
