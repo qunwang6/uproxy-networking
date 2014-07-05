@@ -24,6 +24,10 @@ Rule.copyBuiltModule = (name, dest) ->
     expand: true, cwd: 'build/'
     src: [name + '/**']
     dest: 'build/' + dest
+Rule.copyLibForSample = (dest) ->
+    expand: true, cwd: 'build'
+    src: ['**/*', '!samples', '!typescript-src']
+    dest: 'build/' + dest
 # HACK: this overrides Rule's |noImplicitAny=false| to deal with inability to
 # refer to `core.XXX` providers as members in JavaScript. See:
 # https://github.com/freedomjs/freedom/issues/57
@@ -87,37 +91,25 @@ module.exports = (grunt) ->
       rtcToNet: Rule.copySrcModule 'rtc-to-net'
       peerConnection: Rule.copySrcModule 'peer-connection'
 
+      # Sample peer-connection App
+      pcSampleApp: Rule.copySrcModule 'samples/peer-connection'
+      libForPcSampleApp: Rule.copyLibForSample 'samples/peer-connection'
+
       # Chrome App
-      chromeApp: Rule.copySrcModule 'chrome-app'
-      freedomChrome: { files: [ {
+      chromeApp: Rule.copySrcModule 'samples/chrome-app'
+      freedomForChromeApp: { files: [ {
         expand: true, cwd: 'node_modules/freedom-for-chrome/'
         src: ['freedom-for-chrome.js', 'freedom.map']
-        dest: 'build/chrome-app/' } ] }
-      freedomProvidersChrome: { files: [ {
-        expand: true, cwd: 'node_modules/freedom/providers/transport/webrtc/'
-        src: ['*']
-        dest: 'build/chrome-app/freedom-providers' } ] }
-      echoServer_Chrome: Rule.copyBuiltModule 'echo-server', 'chrome-app/'
-      socksToRtc_Chrome: Rule.copyBuiltModule 'socks-to-rtc', 'chrome-app/'
-      arraybuffers_Chrome: Rule.copyBuiltModule 'arraybuffers', 'chrome-app/'
-      rtcToNet_Chrome: Rule.copyBuiltModule 'rtc-to-net', 'chrome-app/'
-      handler_Chrome: Rule.copyBuiltModule 'handler', 'chrome-app/'
-      tcp_Chrome: Rule.copyBuiltModule 'tcp', 'chrome-app/'
-      udp_Chrome: Rule.copyBuiltModule 'udp', 'chrome-app/'
+        dest: 'build/samples/chrome-app/' } ] }
+      libForChromeApp: Rule.copyLibForSample 'chrome-app/'
 
       # Firefox App
-      firefoxApp: Rule.copySrcModule 'firefox-app'
+      firefoxApp: Rule.copySrcModule 'samples/firefox-app'
       freedomFirefox: { files: [ {
         expand: true, cwd: 'node_modules/freedom-for-firefox/'
         src: ['freedom-for-firefox.jsm', 'freedom.map']
-        dest: 'build/firefox-app/data' } ] }
-      freedomProvidersFirefox: { files: [ {
-        expand: true, cwd: 'node_modules/freedom/providers/transport/webrtc/'
-        src: ['*']
-        dest: 'build/firefox-app/data/freedom-providers' } ] }
-      echoServer_Firefox: Rule.copyBuiltModule 'echo-server', 'firefox-app/data/'
-      socksToRtc_Firefox: Rule.copyBuiltModule 'socks-to-rtc', 'firefox-app/data/'
-      rtcToNet_Firefox: Rule.copyBuiltModule 'rtc-to-net', 'firefox-app/data/'
+        dest: 'build/samples/firefox-app/data' } ] }
+      libForFirefoxApp: Rule.copyLibForSample 'firefox-app/data/'
       # ? what more... ?
     }  # copy
 
@@ -221,6 +213,9 @@ module.exports = (grunt) ->
     'base'
     'typescript:udp'
   ]
+
+  taskManager.add '', [
+    ''
 
   taskManager.add 'chromeApp', [
     'base'
