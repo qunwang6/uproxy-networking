@@ -3,7 +3,7 @@
 */
 /// <reference path='netclient.ts' />
 /// <reference path='../../node_modules/freedom-typescript-api/interfaces/freedom.d.ts' />
-/// <reference path='../../node_modules/freedom-typescript-api/interfaces/transport.d.ts' />
+/// <reference path='../../node_modules/freedom-typescript-api/interfaces/peer-connection.d.ts' />
 /// <reference path='../../node_modules/uproxy-build-tools/src/util/arraybuffers.d.ts' />
 /// <reference path='../interfaces/communications.d.ts' />
 
@@ -19,7 +19,7 @@ module RtcToNet {
   export class Peer {
 
     private signallingChannel:any = null;
-    private transport:freedom.Transport = null;
+    private pc_:freedom.PeerConnection = null;
     // TODO: this is messy...a common superclass would help
     private netClients:{[tag:string]:Net.Client} = {};
     private udpClients:{[tag:string]:Net.UdpClient} = {};
@@ -42,10 +42,20 @@ module RtcToNet {
       dbg('created new peer: ' + peerId);
       // peerconnection's data channels biject ot Net.Clients.
       this.server_ = server;
-      this.transport = freedom['transport']();
-      this.transport.on('onData', this.passPeerDataToNet_);
-      this.transport.on('onClose', this.onCloseHandler_);
-      this.transport.setup('RtcToNet-' + peerId, channel.identifier).then(
+      this.pc_ = freedom['core.peerconnection']();
+      this.pc_.on('onReceived', this.passPeerDataToNet_);
+      this.pc_.on('onOpenDataChannel', this.onOpenDataChannel_);
+      this.pc_.on('onClose', this.onCloseHandler_);
+
+      // TODO: Stolen from transport provider.
+      var STUN_SERVERS = [
+          'stun:stun.l.google.com:19302',
+          'stun:stun1.l.google.com:19302',
+          'stun:stun2.l.google.com:19302',
+          'stun:stun3.l.google.com:19302',
+          'stun:stun4.l.google.com:19302'
+        ];
+      this.pc_.setup(channel.identifier, 'RtcToNet-' + peerId, STUN_SERVERS).then(
         // TODO: emit signals when peer-to-peer connections are setup or fail.
         () => {
           dbg('RtcToNet transport.setup succeeded');
@@ -97,7 +107,7 @@ module RtcToNet {
      * Close PeerConnection and all TCP sockets.
      */
     private onCloseHandler_ = () => {
-      dbg('transport closed with peerId ' + this.peerId);
+      dbg('peer connection closed with peerId ' + this.peerId);
       this.stopPingPong_();
       for (var i in this.netClients) {
         this.netClients[i].close();
@@ -106,38 +116,45 @@ module RtcToNet {
         this.udpClients[i].close();
       }
       freedom.emit('rtcToNetConnectionClosed', this.peerId);
-      // Set transport to null to ensure this object won't be accidentally
-      // used again.
-      this.transport = null;
+      // Set pc_ to null so this object won't be accidentally used again.
+      this.pc_ = null;
       this.server_.removePeer(this.peerId);
     }
 
     public isClosed = () : boolean => {
-      return this.transport === null;
+      return this.pc_ === null;
+    }
+
+    // TODO: freedom.PeerConnection.ChannelInfo
+    private onOpenDataChannel_ = (event:any) => {
+      if (event.channelLabel === 'pingpong') {
+        // This is the name of the channel used by socks-to-rtc to establish
+        // the peer connection.
+        dbg('peer connection established with peerId ' + this.peerId);
+        freedom.emit('rtcToNetConnectionEstablished', this.peerId);
+     }
     }
 
     /**
      * Pass messages from peer connection to net.
      */
-    private passPeerDataToNet_ = (message:freedom.Transport.IncomingMessage) => {
-      // TODO: This handler is also O(n) for ALL the data channels. Super
-      // terrible. Maybe it's fixed after freedom 0.2?
-      if (!message.tag) {
+    // TODO: freedom.PeerConnection.ChannelMessage
+    private passPeerDataToNet_ = (message:any) => {
+      if (!message.channelLabel) {
         dbgErr('received message without datachannel tag!: ' + JSON.stringify(message));
         return;
       }
 
-      if (message.tag == 'control') {
-        var command:Channel.Command = JSON.parse(
-            ArrayBuffers.arrayBufferToString(message.data));
+      if (message.text) {
+        var command:Channel.Command = JSON.parse(message.text);
         if (command.type === Channel.COMMANDS.NET_CONNECT_REQUEST) {
-          var request:Channel.NetConnectRequest = JSON.parse(command.data);
-          if ((command.tag in this.netClients) ||
-              (command.tag in this.udpClients)) {
-            dbgWarn('Net.Client already exists for datachannel: ' + command.tag);
+          var request:Channel.NetConnectRequest = <Channel.NetConnectRequest>command;
+          if ((message.channelLabel in this.netClients) ||
+              (message.channelLabel in this.udpClients)) {
+            dbgWarn('Net.Client already exists for datachannel: ' + message.channelLabel);
             return;
           }
-          this.prepareNetChannelLifecycle_(command.tag, request)
+          this.prepareNetChannelLifecycle_(message.channelLabel, request)
               .then((endpoint:Net.Endpoint) => {
                 return endpoint;
               }, (e) => {
@@ -145,43 +162,37 @@ module RtcToNet {
                 return undefined;
               })
               .then((endpoint?:Net.Endpoint) => {
-                var response:Channel.NetConnectResponse = {};
-                if (endpoint) {
-                  response.address = endpoint.address;
-                  response.port = endpoint.port;
-                }
-                var out:Channel.Command = {
-                    type: Channel.COMMANDS.NET_CONNECT_RESPONSE,
-                    tag: command.tag,
-                    data: JSON.stringify(response)
-                }
-                this.transport.send('control',
-                    ArrayBuffers.stringToArrayBuffer(JSON.stringify(out)));
+                var response:Channel.NetConnectResponse = {
+                  type: Channel.COMMANDS.NET_CONNECT_RESPONSE,
+                  address: endpoint.address || undefined,
+                  port: endpoint.port || undefined
+                };
+                this.pc_.send({
+                  channelLabel: message.channelLabel,
+                  text: JSON.stringify(response)
+                });
               });
-        } else if (command.type === Channel.COMMANDS.HELLO) {
-          // Hello command is used to establish communication from socks-to-rtc,
-          // just ignore it.
-          dbg('received hello from peerId ' + this.peerId);
-          freedom.emit('rtcToNetConnectionEstablished', this.peerId);
-        }  else if (command.type === Channel.COMMANDS.PING) {
+        } else if (command.type === Channel.COMMANDS.PING) {
           this.lastPingPongReceiveDate_ = new Date();
           var command :Channel.Command = {type: Channel.COMMANDS.PONG};
-          this.transport.send('control', ArrayBuffers.stringToArrayBuffer(
-              JSON.stringify(command)));
+          this.pc_.send({
+            channelLabel: 'pingpong',
+            text: JSON.stringify(command)
+          });
         } else {
           // TODO: support SocksDisconnected command
           dbgWarn('unsupported control command: ' + JSON.stringify(command));
         }
       } else {
-        dbg(message.tag + ' <--- received ' + JSON.stringify(message));
-        if(message.tag in this.netClients) {
-          dbg('forwarding ' + message.data.byteLength +
-              ' tcp bytes from datachannel ' + message.tag);
-          this.netClients[message.tag].send(message.data);
-        } else if (message.tag in this.udpClients) {
-          dbg('forwarding ' + message.data.byteLength +
-              ' udp bytes from datachannel ' + message.tag);
-          this.udpClients[message.tag].send(message.data);
+        dbg(message.channelLabel + ' <--- received ' + JSON.stringify(message));
+        if(message.channelLabel in this.netClients) {
+          dbg('forwarding ' + message.buffer.byteLength +
+              ' tcp bytes from datachannel ' + message.channelLabel);
+          this.netClients[message.channelLabel].send(message.buffer);
+        } else if (message.channelLabel in this.udpClients) {
+          dbg('forwarding ' + message.buffer.byteLength +
+              ' udp bytes from datachannel ' + message.channelLabel);
+          this.udpClients[message.channelLabel].send(message.buffer);
         } else {
           dbgErr('[RtcToNet] non-existent channel! Msg: ' + JSON.stringify(message));
         }
@@ -200,19 +211,18 @@ module RtcToNet {
           port: request.port
         };
         var netClient = new Net.Client(
-            (data) => { this.transport.send(tag, data); },  // onResponse
+            (data:ArrayBuffer) => { this.pc_.send({channelLabel: tag, buffer: data}); },
             dest);
         return netClient.create().then((endpoint:Net.Endpoint) => {
           this.netClients[tag] = netClient;
           // Send NetClient remote disconnections back to SOCKS peer, then shut the
           // data channel locally.
           netClient.onceDisconnected().then(() => {
-            var command:Channel.Command = {
-                type: Channel.COMMANDS.NET_DISCONNECTED,
-                tag: tag
-            };
-            this.transport.send('control', ArrayBuffers.stringToArrayBuffer(
-                JSON.stringify(command)));
+            var command:Channel.Command = {type: Channel.COMMANDS.NET_DISCONNECTED};
+            this.pc_.send({
+              channelLabel: tag,
+              text: JSON.stringify(command)
+            });
             dbg('send NET-DISCONNECTED ---> ' + tag);
           });
           return endpoint;
@@ -222,10 +232,9 @@ module RtcToNet {
         var client = new Net.UdpClient(
             request.address,
             request.port,
-            (data:ArrayBuffer) => { this.transport.send(tag, data); });
+            (data:ArrayBuffer) => { this.pc_.send({channelLabel: tag, buffer: data}) });
         return client.bind()
             .then((endpoint:Net.Endpoint) => {
-              dbg('udp socket is bound!');
               this.udpClients[tag] = client;
               return endpoint;
             });
@@ -233,9 +242,8 @@ module RtcToNet {
     }
 
     public close = () => {
-      // Just call this.transport.close, then let onCloseHandler_ do
-      // the rest of the cleanup.
-      this.transport.close();
+      // Close peer connection; onCloseHandler_ will do the rest.
+      this.pc_.close();
     }
 
     /**
@@ -255,7 +263,7 @@ module RtcToNet {
             (nowDate.getTime() - this.lastPingPongReceiveDate_.getTime()) >
              PING_PONG_CHECK_INTERVAL_MS) {
           dbgWarn('no ping-pong detected, closing peer');
-          this.transport.close();
+          this.pc_.close();
         }
       }, PING_PONG_CHECK_INTERVAL_MS);
     }

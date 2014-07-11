@@ -120,6 +120,7 @@ module Socks {
         .then((endpointInfo:Channel.EndpointInfo) => {
           // Clean up when the TCP connection terminates.
           conn.onceDisconnected().then(() => {
+            // TODO: currently, tcp.ts does *not* fulfill this promise
             endpointInfo.terminate();
           });
           conn.on('recv', endpointInfo.send);

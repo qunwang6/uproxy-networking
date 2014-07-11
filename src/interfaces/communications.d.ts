@@ -7,23 +7,18 @@ declare module Channel {
     NET_CONNECT_RESPONSE = 2,
     NET_DISCONNECTED = 3,
     SOCKS_DISCONNECTED = 4,
-    HELLO = 5,
     PING = 6,
     PONG = 7
   }
 
-  // "Top-level" message for the control channel.
+  // Base class for commands (sent via text messages).
   export interface Command {
-    // Name of message, e.g. NetConnectRequest.
+    // Type of message, e.g. NetConnectRequest.
     type:COMMANDS;
-    // Datachannel with which this message is associated.
-    tag?:string;
-    // JSON-encoded message, e.g. NetConnectRequest.
-    data?:string;
   }
 
-  // Sent to request a connection be established with a remote server.
-  export interface NetConnectRequest {
+  // Requests a connection be established with a remote server.
+  export interface NetConnectRequest extends Command {
     // 'tcp' or 'udp'.
     protocol:string;
     // Destination address and port.
@@ -31,7 +26,7 @@ declare module Channel {
     port:number;
   }
 
-  export interface NetConnectResponse {
+  export interface NetConnectResponse extends Command {
     // Address and port on which we have made the connection to the
     // remote server, or both undefined if the connection could not be
     // made.

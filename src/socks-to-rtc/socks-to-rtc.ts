@@ -3,7 +3,7 @@
 */
 /// <reference path='socks.ts' />
 /// <reference path='../../node_modules/freedom-typescript-api/interfaces/freedom.d.ts' />
-/// <reference path='../../node_modules/freedom-typescript-api/interfaces/transport.d.ts' />
+/// <reference path='../../node_modules/freedom-typescript-api/interfaces/peer-connection.d.ts' />
 /// <reference path='../../node_modules/uproxy-build-tools/src/util/arraybuffers.d.ts' />
 /// <reference path='../interfaces/communications.d.ts' />
 
@@ -24,7 +24,7 @@ module SocksToRTC {
 
     private socksServer_:Socks.Server = null;  // Local SOCKS server.
     private signallingChannel_:any = null;     // NAT piercing route.
-    private transport_:freedom.Transport = null;     // For actual proxying.
+    private pc_:freedom.PeerConnection = null; // For actual proxying.
 
     /**
      * Currently open data channels, indexed by data channel tag name.
@@ -60,21 +60,30 @@ module SocksToRTC {
         return false;
       }
       // SOCKS sessions biject to peerconnection datachannels.
-      this.transport_ = freedom['transport']();
-      this.transport_.on('onData', this.onDataFromPeer_);
-      this.transport_.on('onClose', this.onCloseHandler_);
+      this.pc_ = freedom['core.peerconnection']();
+      this.pc_.on('onReceived', this.onDataFromPeer_);
+      this.pc_.on('onClose', this.onCloseHandler_);
+
       // Messages received via signalling channel must reach the remote peer
       // through something other than the peerconnection. (e.g. XMPP)
       fCore.createChannel().then((chan) => {
-        this.transport_.setup('SocksToRtc-' + peerId, chan.identifier).then(
+        // TODO: Stolen from transport provider.
+        var STUN_SERVERS = [
+            'stun:stun.l.google.com:19302',
+            'stun:stun1.l.google.com:19302',
+            'stun:stun2.l.google.com:19302',
+            'stun:stun3.l.google.com:19302',
+            'stun:stun4.l.google.com:19302'
+          ];
+        this.pc_.setup(chan.identifier, 'SocksToRtc-' + peerId, STUN_SERVERS).then(
           () => {
-            dbg('SocksToRtc transport_.setup succeeded');
+            dbg('SocksToRtc peer connection setup succeeded');
             freedom.emit('socksToRtcSuccess', remotePeer);
             this.startPingPong_();
           }
         ).catch(
           (e) => {
-            dbgErr('SocksToRtc transport_.setup failed ' + e);
+            dbgErr('SocksToRtc peer connection setup failed ' + e);
             freedom.emit('socksToRtcFailure', remotePeer);
           }
         );
@@ -104,14 +113,10 @@ module SocksToRTC {
           queuedMessages.push(msg);
         });
         dbg('signalling channel to SCTP peer connection ready.');
-        // Send hello command to initiate communication, which will cause
-        // the promise returned this.transport_.setup to fulfill.
-        // TODO: remove hello command once freedom.transport.setup
-        // is changed to automatically negotiate the connection.
-        dbg('sending hello command.');
-        var command :Channel.Command = {type: Channel.COMMANDS.HELLO};
-        this.transport_.send('control', ArrayBuffers.stringToArrayBuffer(
-            JSON.stringify(command)));
+        // Open a datachannel to initiate the peer connection.
+        // This will cause the promise returned by this.pc_.setup to fulfill.
+        dbg('initiating peer connection...');
+        this.pc_.openDataChannel('pingpong');
       });  // fCore.createChannel
 
       // Create SOCKS server and start listening.
@@ -120,21 +125,22 @@ module SocksToRTC {
       this.socksServer_.listen();
     }
 
+    // Closes the peer connection.
     public close = () => {
-      if (this.transport_) {
-        // Close transport, then onCloseHandler_ will take care of resetting
-        // state.
-        this.transport_.close();
+      if (this.pc_) {
+        // Close peer connection; onCloseHandler_ will reset state.
+        this.pc_.close();
       } else {
-        // Transport already closed, just call reset.
+        // Peer connection already closed, just call reset.
         this.reset_();
       }
     }
 
+    // Invoked when the peer connection has terminated.
     private onCloseHandler_ = () => {
-      dbg('onCloseHandler_ invoked for transport.')
-      // Set this.transport to null so reset_ doesn't attempt to close it again.
-      this.transport_ = null;
+      dbg('peer connection has closed!')
+      // Set this.pc_ to null so reset_ doesn't attempt to close it again.
+      this.pc_ = null;
       this.reset_();
     }
 
@@ -142,7 +148,7 @@ module SocksToRTC {
      * Stop SOCKS server and close data channels and peer connections.
      */
     private reset_ = () => {
-      dbg('resetting peer...');
+      dbg('resetting...');
       this.stopPingPong_();
       if (this.socksServer_) {
         this.socksServer_.disconnect();  // Disconnects internal TCP server.
@@ -152,12 +158,9 @@ module SocksToRTC {
         this.closeConnectionToPeer(tag);
       }
       this.channels_ = {};
-      if (this.transport_) {
-        this.transport_.close();
-        this.transport_ = null;
-      }
-      if (this.signallingChannel_) {  // TODO: is this actually right?
-        this.signallingChannel_.emit('close');
+      if (this.pc_) {
+        this.pc_.close();
+        this.pc_ = null;
       }
       this.signallingChannel_ = null;
       this.peerId_ = null;
@@ -168,8 +171,8 @@ module SocksToRTC {
      * Setup a new data channel.
      */
     private createChannel_ = (params:Channel.EndpointInfo) : Promise<Channel.EndpointInfo> => {
-      if (!this.transport_) {
-        dbgWarn('transport not ready');
+      if (!this.pc_) {
+        dbgWarn('peer connection not ready');
         return;
       }
 
@@ -181,41 +184,43 @@ module SocksToRTC {
       // the remote host and register a callback for when it gets back to us
       // on the control channel.
       // TODO: how to add a timeout, in case the remote end never replies?
-      return new Promise((F,R) => {
-        Peer.connectCallbacks[tag] = (response:Channel.NetConnectResponse) => {
-          if (response.address) {
-            var endpointInfo:Channel.EndpointInfo = {
-              protocol: params.protocol,
-              address: response.address,
-              port: response.port,
-              send: (buf:ArrayBuffer) => { this.sendToPeer_(tag, buf); },
-              terminate: () => { this.terminate_(tag); }
-            };
-            F(endpointInfo);
-          } else {
-            R(new Error('could not create datachannel'));
-          }
-        };
-        var request:Channel.NetConnectRequest = {
-          protocol: params.protocol,
-          address: params.address,
-          port: params.port
-        };
-        var command:Channel.Command = {
-          type: Channel.COMMANDS.NET_CONNECT_REQUEST,
-          tag: tag,
-          data: JSON.stringify(request)
-        };
-        this.transport_.send('control', ArrayBuffers.stringToArrayBuffer(
-            JSON.stringify(command)));
+      return this.pc_.openDataChannel(tag).then(() => {
+        return new Promise((F, R) => {
+          Peer.connectCallbacks[tag] = (response:Channel.NetConnectResponse) => {
+            if (response.address) {
+              var endpointInfo:Channel.EndpointInfo = {
+                protocol: params.protocol,
+                address: response.address,
+                port: response.port,
+                send: (buf:ArrayBuffer) => { this.sendToPeer_(tag, buf); },
+                terminate: () => { this.terminate_(tag); }
+              };
+              F(endpointInfo);
+            } else {
+              R(new Error('could not connect to remote endpoint'));
+            }
+          };
+
+          var request:Channel.NetConnectRequest = {
+            type: Channel.COMMANDS.NET_CONNECT_REQUEST,
+            protocol: params.protocol,
+            address: params.address,
+            port: params.port
+          };
+          this.pc_.send({
+            channelLabel: tag,
+            text: JSON.stringify(request)
+          });
+        });
+      }, (e) => {
+        dbgErr('could not establish data channel');
+        return Promise.reject(e);
       });
     }
 
-    /**
-     * Signals to the remote side that it should forget about this datachannel
-     * and discards our referece to the datachannel. Intended for use by the
-     * SOCKS server when the SOCKS client disconnects.
-     */
+    // Invoked by the SOCKS server when the TCP connection between itself
+    // and the SOCKS client terminates.
+    // TODO: currently, socks.ts does *not* call this, due to tcp.ts brokenness
     private terminate_ = (tag:string) => {
       if (!(tag in this.channels_)) {
         dbgWarn('tried to terminate unknown datachannel ' + tag);
@@ -223,11 +228,12 @@ module SocksToRTC {
       }
       dbg('terminating datachannel ' + tag);
       var command:Channel.Command = {
-          type: Channel.COMMANDS.SOCKS_DISCONNECTED,
-          tag: tag
+        type: Channel.COMMANDS.SOCKS_DISCONNECTED
       };
-      this.transport_.send('control', ArrayBuffers.stringToArrayBuffer(
-          JSON.stringify(command)));
+      this.pc_.send({
+        channelLabel: tag,
+        text: JSON.stringify(command)
+      });
       delete this.channels_[tag];
     }
 
@@ -235,46 +241,46 @@ module SocksToRTC {
      * Receive replies proxied back from the remote RtcToNet.Peer and pass them
      * back across underlying SOCKS session / TCP socket.
      */
-    private onDataFromPeer_ = (msg:freedom.Transport.IncomingMessage) => {
-      dbg(msg.tag + ' <--- received ' + msg.data.byteLength);
-      if (!msg.tag) {
+    // TODO: freedom.PeerConnection.ChannelMessage
+    private onDataFromPeer_ = (msg:any) => {
+      if (!msg.channelLabel) {
         dbgErr('received message without datachannel tag!: ' + JSON.stringify(msg));
         return;
       }
 
-      if (msg.tag == 'control') {
-        var command:Channel.Command = JSON.parse(
-            ArrayBuffers.arrayBufferToString(msg.data));
-
+      if (msg.text) {
+        var command:Channel.Command = JSON.parse(msg.text);
         if (command.type === Channel.COMMANDS.NET_CONNECT_RESPONSE) {
           // Call the associated callback and forget about it.
           // The callback should fulfill or reject the promise on
           // which the client is waiting, completing the connection flow.
-          var response:Channel.NetConnectResponse = JSON.parse(command.data);
-          if (command.tag in Peer.connectCallbacks) {
-            var callback = Peer.connectCallbacks[command.tag];
+          var response:Channel.NetConnectResponse = <Channel.NetConnectResponse>command;
+          if (msg.channelLabel in Peer.connectCallbacks) {
+            var callback = Peer.connectCallbacks[msg.channelLabel];
             callback(response);
-            delete Peer.connectCallbacks[command.tag];
+            delete Peer.connectCallbacks[msg.channelLabel];
           } else {
-            dbgWarn('received connect callback for unknown datachannel: ' +
-                command.tag);
+            dbgErr('received connect callback for unknown datachannel: ' +
+                msg.channelLabel);
           }
         } else if (command.type === Channel.COMMANDS.NET_DISCONNECTED) {
           // Receiving a disconnect on the remote peer should close SOCKS.
-          dbg(command.tag + ' <--- received NET-DISCONNECTED');
-          this.closeConnectionToPeer(command.tag);
+          dbg(msg.channelLabel + ' <--- received NET-DISCONNECTED');
+          this.closeConnectionToPeer(msg.channelLabel);
         } else if (command.type === Channel.COMMANDS.PONG) {
           this.lastPingPongReceiveDate_ = new Date(); 
         } else {
-          dbgWarn('unsupported control command: ' + command.type);
+          dbgErr('unsupported control command: ' + command.type);
         }
-      } else {
-        if (!(msg.tag in this.channels_)) {
-          dbgErr('unknown datachannel ' + msg.tag);
+      } else if (msg.buffer) {
+        if (!(msg.channelLabel in this.channels_)) {
+          dbgErr('unknown datachannel ' + msg.channelLabel);
           return;
         }
-        var session = this.channels_[msg.tag];
-        session.send(msg.data);
+        var session = this.channels_[msg.channelLabel];
+        session.send(msg.buffer);
+      } else {
+        dbgErr('message received without text or buffer');
       }
     }
 
@@ -289,23 +295,25 @@ module SocksToRTC {
         return;
       }
       dbg('datachannel ' + tag + ' has closed. ending SOCKS session for channel.');
+      // TODO: Why not just have rtc-to-net close the data channel and listen
+      //       for onCloseDataChannel events in this module?
       this.channels_[tag].terminate();
       delete this.channels_[tag];
     }
 
     /**
-     * Send data over SCTP to peer, via data channel |tag|.
-     *
-     * Side note: When transport_ encounters a 'new' |tag|, it
-     * implicitly creates a new data channel.
+     * Sends data over the peer connection.
      */
     private sendToPeer_ = (tag:string, buffer:ArrayBuffer) => {
-      if (!this.transport_) {
-        dbgWarn('transport_ not ready');
+      if (!this.pc_) {
+        dbgWarn('peer connection not ready');
         return;
       }
       dbg('send ' + buffer.byteLength + ' bytes on datachannel ' + tag);
-      this.transport_.send(tag, buffer);
+      this.pc_.send({
+        channelLabel: tag,
+        buffer: buffer
+      });
     }
 
     /**
@@ -340,7 +348,7 @@ module SocksToRTC {
       var ret ='<SocksToRTC.Peer: failed toString()>';
       try {
         ret = JSON.stringify({ socksServer: this.socksServer_,
-                               transport: this.transport_,
+                               pc: this.pc_,
                                peerId: this.peerId_,
                                signallingChannel: this.signallingChannel_,
                                channels: this.channels_ });
@@ -355,25 +363,29 @@ module SocksToRTC {
      * Chrome version 37), at which point we should be able to remove this code.
      */
     private startPingPong_ = () => {
-      this.pingPongSendIntervalId_ = setInterval(() => {
-        var command :Channel.Command = {type: Channel.COMMANDS.PING};
-        this.transport_.send('control', ArrayBuffers.stringToArrayBuffer(
-            JSON.stringify(command)));
-      }, 1000);
+      this.pc_.openDataChannel('pingpong').then(() => {
+        this.pingPongSendIntervalId_ = setInterval(() => {
+          var command :Channel.Command = {type: Channel.COMMANDS.PING};
+          this.pc_.send({
+            channelLabel: 'pingpong',
+            text: JSON.stringify(command)
+          });
+        }, 1000);
 
-      var PING_PONG_CHECK_INTERVAL_MS :number = 10000;
-      this.pingPongCheckIntervalId_ = setInterval(() => {
-        var nowDate = new Date();
-        if (!this.lastPingPongReceiveDate_ ||
-            (nowDate.getTime() - this.lastPingPongReceiveDate_.getTime()) >
-             PING_PONG_CHECK_INTERVAL_MS) {
-          dbgWarn('no ping-pong detected, closing peer');
-          // Save remotePeer before closing because it will be reset.
-          var remotePeer = this.remotePeer_;
-          this.close();
-          freedom.emit('socksToRtcTimeout', remotePeer);
-        }
-      }, PING_PONG_CHECK_INTERVAL_MS);
+        var PING_PONG_CHECK_INTERVAL_MS :number = 10000;
+        this.pingPongCheckIntervalId_ = setInterval(() => {
+          var nowDate = new Date();
+          if (!this.lastPingPongReceiveDate_ ||
+              (nowDate.getTime() - this.lastPingPongReceiveDate_.getTime()) >
+               PING_PONG_CHECK_INTERVAL_MS) {
+            dbgWarn('no ping-pong detected, closing peer');
+            // Save remotePeer before closing because it will be reset.
+            var remotePeer = this.remotePeer_;
+            this.close();
+            freedom.emit('socksToRtcTimeout', remotePeer);
+          }
+        }, PING_PONG_CHECK_INTERVAL_MS);
+      });
     }
 
     private stopPingPong_ = () => {
