@@ -127,12 +127,12 @@ module RtcToNet {
 
     // TODO: freedom.PeerConnection.ChannelInfo
     private onOpenDataChannel_ = (event:any) => {
-      if (event.channelLabel === 'pingpong') {
-        // This is the name of the channel used by socks-to-rtc to establish
-        // the peer connection.
-        dbg('peer connection established with peerId ' + this.peerId);
-        freedom.emit('rtcToNetConnectionEstablished', this.peerId);
-     }
+      // TODO: only do this when the pingpong channel is opened (this is the
+      //       name of the channel used by socks-to-rtc to establish the peer
+      //       connection) -- see this issue:
+      //         https://github.com/freedomjs/freedom/issues/79
+      dbg('peer connection established with peerId ' + this.peerId);
+      freedom.emit('rtcToNetConnectionEstablished', this.peerId);
     }
 
     /**

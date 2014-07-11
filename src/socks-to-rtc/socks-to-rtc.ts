@@ -296,7 +296,8 @@ module SocksToRTC {
       }
       dbg('datachannel ' + tag + ' has closed. ending SOCKS session for channel.');
       // TODO: Why not just have rtc-to-net close the data channel and listen
-      //       for onCloseDataChannel events in this module?
+      //       for onCloseDataChannel events in this module? see this issue:
+      //         https://github.com/freedomjs/freedom/issues/80
       this.channels_[tag].terminate();
       delete this.channels_[tag];
     }
