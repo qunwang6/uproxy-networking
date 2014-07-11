@@ -11,14 +11,9 @@
       "../util/arraybuffers.js"
     ]
   },
-  "dependencies": {
-    "transport": {
-      "url": "../freedom-providers/transport.webrtc.json",
-      "api": "transport"
-    }
-  },
   "permissions": [
     "core.tcpsocket",
-    "core.udpsocket"
+    "core.udpsocket",
+    "core.peerconnection"
   ]
 }

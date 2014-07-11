@@ -16,18 +16,6 @@ module.exports = (grunt) ->
         expand: true, cwd: 'node_modules/freedom-for-firefox/build/'
         src: ['freedom-for-firefox.jsm', 'freedom.map']
         dest: 'build/firefox-app/data' } ] }
-      freedomProvidersBuild: { files: [ {
-        expand: true, cwd: 'node_modules/freedom/providers/transport/webrtc/'
-        src: ['*']
-        dest: 'build/freedom-providers' } ] }
-      freedomProvidersChrome: { files: [ {
-        expand: true, cwd: 'node_modules/freedom/providers/transport/webrtc/'
-        src: ['*']
-        dest: 'build/chrome-app/freedom-providers' } ] }
-      freedomProvidersFirefox: { files: [ {
-        expand: true, cwd: 'node_modules/freedom/providers/transport/webrtc/'
-        src: ['*']
-        dest: 'build/firefox-app/data/freedom-providers' } ] }
       buildUtil: { files: [ {
           expand: true, cwd: 'node_modules/uproxy-build-tools/build/util',
           src: ['**/*.js'],
